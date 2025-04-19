@@ -7,19 +7,26 @@ const COLS = 15;
 canvas.width = TILE_SIZE * COLS;
 canvas.height = TILE_SIZE * ROWS;
 
-// Tile values
 const EMPTY = 0;
 const WALL = 1;
 const CHEESE = 2;
 const CAT = 3;
 const ACTIONS = ["up", "down", "left", "right"];
 
-// Game state
-let mouse = { x: 0, y: 0 };
-let grid;
-let q = {};
+const NUM_MICE = 5;
+let mice = Array.from({ length: NUM_MICE }, (_, i) => ({
+    id: i,
+    x: 0,
+    y: 0,
+    color: `hsl(${(i * 360) / NUM_MICE}, 100%, 50%)`,
+    q: {},
+    episode: 0,
+    steps:0,
+}));
 
-// Utility functions
+let grid = createEmptyGrid();
+placeCats(grid);
+
 function createEmptyGrid() {
     const grid = Array.from({ length: ROWS }, () => Array(COLS).fill(EMPTY));
     grid[ROWS - 1][COLS - 1] = CHEESE;
@@ -50,11 +57,25 @@ function drawGrid() {
         }
     }
 
-    // Draw mouse
-    ctx.fillStyle = "gray";
-    ctx.beginPath();
-    ctx.arc(mouse.x * TILE_SIZE + TILE_SIZE / 2, mouse.y * TILE_SIZE + TILE_SIZE / 2, TILE_SIZE / 3, 0, Math.PI * 2);
-    ctx.fill();
+    for (const mouse of mice) {
+        ctx.fillStyle = mouse.color;
+        ctx.beginPath();
+        ctx.arc(mouse.x * TILE_SIZE + TILE_SIZE / 2, mouse.y * TILE_SIZE + TILE_SIZE / 2, TILE_SIZE / 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+function initializeAllQTables() {
+    for (const mouse of mice) {
+        mouse.q = {};
+        for (let y = 0; y < ROWS; y++) {
+            for (let x = 0; x < COLS; x++) {
+                if (grid[y][x] !== WALL) {
+                    mouse.q[`${y},${x}`] = Object.fromEntries(ACTIONS.map(a => [a, 0]));
+                }
+            }
+        }
+    }
 }
 
 function getReward(x, y) {
@@ -72,114 +93,77 @@ function move({ x, y }, action) {
     return { x, y };
 }
 
-function initializeQTable() {
-    q = {};
-    for (let y = 0; y < ROWS; y++) {
-        for (let x = 0; x < COLS; x++) {
-            if (grid[y][x] !== WALL) {
-                q[`${y},${x}`] = Object.fromEntries(ACTIONS.map(a => [a, 0]));
-            }
-        }
-    }
-}
-
-// Q-learning training
-function trainQTable(episodes = 1000, alpha = 0.5, gamma = 0.9, eps = 0.2) {
-    for (let i = 0; i < episodes; i++) {
-        let state = { x: 0, y: 0 };
-        let stateKey = `${state.y},${state.x}`;
-        let steps = 0;
-
-        while (grid[state.y][state.x] !== CHEESE && steps < 100) {
-            steps++;
-            let action;
-
-            if (Math.random() < eps) {
-                action = ACTIONS[Math.floor(Math.random() * ACTIONS.length)];
-            } else {
-                const maxQ = Math.max(...Object.values(q[stateKey]));
-                const bestActions = Object.entries(q[stateKey])
-                    .filter(([_, value]) => value === maxQ)
-                    .map(([a]) => a);
-                action = bestActions[Math.floor(Math.random() * bestActions.length)];
-            }
-
-            let next = move(state, action);
-            let nextKey = `${next.y},${next.x}`;
-            let reward = getReward(next.x, next.y);
-
-            if (!q[nextKey]) continue; // ignore moves into undefined states
-
-            let oldQ = q[stateKey][action];
-            let maxFutureQ = Math.max(...Object.values(q[nextKey]));
-            q[stateKey][action] = oldQ + alpha * (reward + gamma * maxFutureQ - oldQ);
-
-            state = next;
-            stateKey = nextKey;
-        }
-    }
-}
-
-// Run trained policy
-const hist = []
-function followQPolicy() {
-    mouse = { x: 0, y: 0 };
+function trainOneEpisode(mouse, alpha = 0.5, gamma = 0.9, eps = 0.2) {
+    let state = { x: 0, y: 0 };
+    let stateKey = `${state.y},${state.x}`;
     let steps = 0;
 
-    const interval = setInterval(() => {
-        drawGrid();
+    while (grid[state.y][state.x] !== CHEESE && steps < 100) {
+        steps++;
+        let action;
 
-        let stateKey = `${mouse.y},${mouse.x}`;
-        if (!q[stateKey]) {
-            console.log("🤖 Invalid state, stopping.");
-            clearInterval(interval);
-            return;
+        if (Math.random() < eps) {
+            action = ACTIONS[Math.floor(Math.random() * ACTIONS.length)];
+        } else {
+            const maxQ = Math.max(...Object.values(mouse.q[stateKey]));
+            const bestActions = Object.entries(mouse.q[stateKey])
+                .filter(([_, value]) => value === maxQ)
+                .map(([a]) => a);
+            action = bestActions[Math.floor(Math.random() * bestActions.length)];
         }
 
-        if (grid[mouse.y][mouse.x] === CHEESE) {
-            console.log("🎉 Got the cheese!");
-            clearInterval(interval);
-            return;
-        }
+        let next = move(state, action);
+        let nextKey = `${next.y},${next.x}`;
+        let reward = getReward(next.x, next.y);
 
-        if (grid[mouse.y][mouse.x] === CAT) {
-            console.log("💀 Eaten by cat!");
-            clearInterval(interval);
-            resetGame();
-            return;
-        }
+        if (!mouse.q[nextKey]) continue;
 
-        const maxQ = Math.max(...Object.values(q[stateKey]));
+        let oldQ = mouse.q[stateKey][action];
+        let maxFutureQ = Math.max(...Object.values(mouse.q[nextKey]));
+        mouse.q[stateKey][action] = oldQ + alpha * (reward + gamma * maxFutureQ - oldQ);
+
+        state = next;
+        stateKey = nextKey;
+    }
+}
+
+function trainAllMiceAndShow() {
+    
+    for (const mouse of mice) {
         
-        const bestActions = Object.entries(q[stateKey])
+        trainOneEpisode(mouse);
+        mouse.episode++;
+        let stateKey = `${mouse.y},${mouse.x}`;
+        const qTable = mouse.q[stateKey];
+        if (!qTable) continue;
+
+        const maxQ = Math.max(...Object.values(qTable));
+        const bestActions = Object.entries(qTable)
             .filter(([_, val]) => val === maxQ)
             .map(([act]) => act);
 
         const action = bestActions.length > 0 ? randomChoice(bestActions) : ACTIONS[Math.floor(Math.random() * 4)];
-        hist.push(action)
-        mouse = move(mouse, action);
+        const next = move(mouse, action);
+        mouse.x = next.x;
+        mouse.y = next.y;
+        mouse.steps++;
 
-        steps++;
-        if (steps > 200) {
-            console.log("⏹️ Mouse got stuck.");
-            clearInterval(interval);
+        if (grid[mouse.y][mouse.x] === CHEESE || grid[mouse.y][mouse.x] === CAT || mouse.steps ===100) {
+            mouse.x = 0;
+            mouse.y = 0;
+            mouse.steps=0;
         }
-    }, 200);
+        
+    }
+
+    drawGrid();
+    setTimeout(trainAllMiceAndShow, 500);
 }
+
 function randomChoice(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function resetGame() {
-    grid = createEmptyGrid();
-    placeCats(grid);
-    initializeQTable();
-    trainQTable();
 
-    followQPolicy();
-    console.log(hist)
-
-}
-
-// Init & run
-resetGame();
+initializeAllQTables();
+trainAllMiceAndShow();
