@@ -1,1 +1,1 @@
-A mouse and cat maze game with Q learning. 
+A "mouse" and "cat" maze game with Q learning. 
